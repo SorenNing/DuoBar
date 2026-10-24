@@ -84,7 +84,9 @@ static BOOL NativeLocked(void) {
             return;
         }
     }
-    for (UIView *sub in view.subviews) [self collect:sub in:icons];
+    if ([view isKindOfClass:UIScrollView.class]) {
+        for (UIView *sub in view.subviews) [self collect:sub in:icons];
+    }
 }
 
 - (UIColor *)foregroundOf:(UIView *)bar {
@@ -225,7 +227,21 @@ static BOOL NativeLocked(void) {
         [self tick:view];
         return;
     }
-    for (UIView *sub in view.subviews) [self scanTree:sub];
+    // Lunora discovers status items by their actual Image/String view types.
+    NSString *className = NSStringFromClass(view.class);
+    if ([className isEqualToString:@"STUIStatusBarImageView"] ||
+        [className isEqualToString:@"STUIStatusBarStringView"] ||
+        [className isEqualToString:@"STUIStatusBarBatteryView"]) {
+        for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+            if ([NSStringFromClass(ancestor.class) isEqualToString:@"STUIStatusBar"]) {
+                [self tick:ancestor];
+                return;
+            }
+        }
+    }
+    if ([view isKindOfClass:UIScrollView.class]) {
+        for (UIView *sub in view.subviews) [self scanTree:sub];
+    }
 }
 @end
 
@@ -235,15 +251,28 @@ static void NativeLayout(id self, SEL _cmd) {
     [[NativeController shared] tick:(UIView *)self];
 }
 
-static void NativeInstallHook(void) {
-    Class cls = objc_getClass("STUIStatusBar");
-    if (!cls) return;
-    Method method = class_getInstanceMethod(cls, @selector(layoutSubviews));
-    if (!method) return;
+static IMP NativeInstallOneHook(NSString *className, SEL selector, IMP replacement) {
+    Class cls = objc_getClass(className.UTF8String);
+    if (!cls) return NULL;
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return NULL;
     IMP current = method_getImplementation(method);
-    if (current == (IMP)NativeLayout) return;
-    NativeOriginalLayout = (void (*)(id, SEL))current;
-    method_setImplementation(method, (IMP)NativeLayout);
+    if (current == replacement) return NULL;
+    method_setImplementation(method, replacement);
+    return current;
+}
+
+static void NativeInstallHook(void) {
+    NativeOriginalLayout = (void (*)(id, SEL))NativeInstallOneHook(
+        @"STUIStatusBar", @selector(layoutSubviews), (IMP)NativeLayout);
+    // Lunora 1.1.4 also observes these three native view lifecycle callbacks.
+    // They cover bars whose trailing icons are not yet in place at layout time.
+    NativeInstallOneHook(@"STUIStatusBar", @selector(didMoveToWindow), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBar", @selector(didMoveToSuperview), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarImageView", @selector(didMoveToWindow), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarImageView", @selector(didMoveToSuperview), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarStringView", @selector(didMoveToWindow), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarStringView", @selector(didMoveToSuperview), (IMP)NativeLayout);
 }
 
 __attribute__((constructor)) static void NativeInit(void) {
