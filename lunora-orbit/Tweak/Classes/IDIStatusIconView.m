@@ -1,5 +1,7 @@
 #import "IDIStatusIconView.h"
+#import "IDIStatusBarSession.h"
 #import "DuoGlyphView.h"
+#import "IDICompat.h"
 #import <objc/message.h>
 
 @implementation IDIStatusIconView
