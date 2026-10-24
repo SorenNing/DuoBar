@@ -75,7 +75,11 @@ static char IDISessionKey;
         [self.rightSurface removeFromSuperview]; return;
     }
     UIView *foreground=[bar valueForKey:@"foregroundView"];
-    if (![foreground isKindOfClass:UIView.class]) foreground=bar;
+    if (![foreground isKindOfClass:UIView.class]) {
+        // iOS 17 keeps the trailing cluster directly on the bar; fall back to the
+        // bar itself so the ring is still hosted when foregroundView is absent.
+        foreground=bar;
+    }
     [foreground addSubview:self.rightSurface];
     self.rightSurface.frame=foreground.bounds;
     [self.rightSurface layoutIfNeeded];
