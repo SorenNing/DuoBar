@@ -1,459 +1,270 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <substrate.h>
-#import <dlfcn.h>
-#import <mach-o/dyld.h>
+#import "DuoGlyphView.h"
 
-// NativeDuo: no snapshots. Actual system icon views are moved on the main thread.
+// No snapshot is taken anywhere. The visible UIKit views are transformed only
+// after the real native icons have had time to settle.
 
-static NSString *const kEngineDomain = @"iya.banana.duoicon";
-static NSString *const kGateDomain = @"com.ning.duobar";
+static NSString *const kEngine = @"iya.banana.duoicon";
+static NSString *const kGate = @"com.ning.duobar";
+static NSString *const kBarKey = @"NativeDuo.Bar";
+static NSString *const kRingKey = @"NativeDuo.Ring";
+static NSString *const kActiveKey = @"NativeDuo.Active";
+static NSString *const kRestoreKey = @"NativeDuo.Restore";
 
-static CFPropertyListRef Copy(NSString *k, NSString *domain) {
-    return CFPreferencesCopyValue((__bridge CFStringRef)k, (__bridge CFStringRef)domain,
-        kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+static CFPropertyListRef NativeCopy(NSString *key, NSString *domain) {
+    return CFPreferencesCopyValue((__bridge CFStringRef)key,
+        (__bridge CFStringRef)domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 }
-static double Dbl(NSString *k, double fallback) {
-    CFPropertyListRef v = Copy(k, kGateDomain);
-    double r = fallback;
-    if (v) {
-        if (CFGetTypeID(v) == CFNumberGetTypeID()) r = [(__bridge NSNumber *)v doubleValue];
-        else if (CFGetTypeID(v) == CFBooleanGetTypeID()) r = CFBooleanGetValue((CFBooleanRef)v) ? 1 : 0;
-        CFRelease(v);
+
+static double NativeNumber(NSString *key, NSString *domain, double fallback) {
+    CFPropertyListRef value = NativeCopy(key, domain);
+    if (!value) return fallback;
+    double result = fallback;
+    if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+        result = [(__bridge NSNumber *)value doubleValue];
+    } else if (CFGetTypeID(value) == CFBooleanGetTypeID()) {
+        result = CFBooleanGetValue((CFBooleanRef)value) ? 1 : 0;
     }
-    return r;
-}
-static BOOL Bool(NSString *k, BOOL fallback) { return Dbl(k, fallback) != 0; }
-static double EDbl(NSString *k, double fallback) {
-    CFPropertyListRef v = Copy(k, kEngineDomain);
-    double r = fallback;
-    if (v) {
-        if (CFGetTypeID(v) == CFNumberGetTypeID()) r = [(__bridge NSNumber *)v doubleValue];
-        else if (CFGetTypeID(v) == CFBooleanGetTypeID()) r = CFBooleanGetValue((CFBooleanRef)v) ? 1 : 0;
-        CFRelease(v);
-    }
-    return r;
+    CFRelease(value);
+    return result;
 }
 
-static BOOL CoverSheet(void) {
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-        if (![s isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *w in ((UIWindowScene *)s).windows)
-            if ([[NSStringFromClass(w.class) lowercaseString] containsString:@"coversheet"] && !w.hidden && w.alpha > .01)
-                return YES;
-    }
-    return NO;
+static BOOL NativeEngineEnabled(void) {
+    return NativeNumber(@"Enabled", kEngine, 1) != 0;
 }
 
-static BOOL Locked(void) {
-    Class c = NSClassFromString(@"SBLockScreenManager");
-    SEL sh = NSSelectorFromString(@"sharedInstance");
-    if (!c || ![c respondsToSelector:sh]) return NO;
-    id m = ((id (*)(id,SEL))objc_msgSend)(c,sh);
-    for (NSString *n in @[@"isUILocked", @"isLockScreenVisible"]) {
-        SEL s = NSSelectorFromString(n);
-        if ([m respondsToSelector:s] && ((BOOL(*)(id,SEL))objc_msgSend)(m,s)) return YES;
+static BOOL NativeControlCenterVisible(void) {
+    Class cls = NSClassFromString(@"SBControlCenterController");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    if (!cls || ![cls respondsToSelector:shared]) return NO;
+    id controller = ((id (*)(id, SEL))objc_msgSend)(cls, shared);
+    for (NSString *name in @[@"isVisible", @"isPresented"]) {
+        SEL selector = NSSelectorFromString(name);
+        if ([controller respondsToSelector:selector] &&
+            ((BOOL (*)(id, SEL))objc_msgSend)(controller, selector)) return YES;
     }
     return NO;
 }
 
-@interface NativeDuoRing : UIView
-@property(nonatomic,strong) UIColor *fg;
-@property(nonatomic,strong) UIColor *accent;
-@property(nonatomic) double level;
-@property(nonatomic) double progress;
-@property(nonatomic) BOOL percent;
-@property(nonatomic) BOOL wifi;
-@end
-
-@implementation NativeDuoRing
-- (instancetype)initWithFrame:(CGRect)f {
-    if ((self=[super initWithFrame:f])) {
-        _fg=UIColor.labelColor; _accent=[UIColor colorWithRed:.204 green:.80 blue:.348 alpha:1];
-        _level=1; _percent=YES; _wifi=YES;
-        self.opaque=NO; self.backgroundColor=UIColor.clearColor;
+static BOOL NativeLocked(void) {
+    Class cls = NSClassFromString(@"SBLockScreenManager");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    if (!cls || ![cls respondsToSelector:shared]) return NO;
+    id manager = ((id (*)(id, SEL))objc_msgSend)(cls, shared);
+    for (NSString *name in @[@"isUILocked", @"isLockScreenVisible"]) {
+        SEL selector = NSSelectorFromString(name);
+        if ([manager respondsToSelector:selector] &&
+            ((BOOL (*)(id, SEL))objc_msgSend)(manager, selector)) return YES;
     }
-    return self;
+    return NO;
 }
-- (void)drawRect:(CGRect)rect {
-    CGContextRef c=UIGraphicsGetCurrentContext();
-    CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
-    CGFloat s=MIN(w/34,h/34),cx=w/2,cy=h/2,r=12*s,lw=2*s;
-    double p=MAX(0,MIN(1,_progress));
-    CGContextSetLineWidth(c,lw);
-    CGContextSetLineCap(c,kCGLineCapRound);
-    UIColor *base=[_fg colorWithAlphaComponent:.22*p];
-    CGContextSetStrokeColorWithColor(c,base.CGColor);
-    CGContextAddArc(c,cx,cy,r,-M_PI_2,3*M_PI_2,0); CGContextStrokePath(c);
-    UIColor *fill=(_level<.20?[UIColor systemRedColor]:_accent);
-    CGContextSetStrokeColorWithColor(c,fill.CGColor);
-    CGContextAddArc(c,cx,cy,r,-M_PI_2,-M_PI_2+2*M_PI*_level*p,0);
-    CGContextStrokePath(c);
-    if (_wifi && p>.6) {
-        UIColor *col=[_fg colorWithAlphaComponent:p];
-        for (int i=0;i<3;i++) {
-            CGFloat rr=(4.5+i*3.1)*s;
-            CGContextSetStrokeColorWithColor(c,col.CGColor);
-            CGContextSetLineWidth(c,1.65*s);
-            CGContextAddArc(c,cx,cy+2.8*s,rr,-M_PI_2-.60,-M_PI_2+.60,0);
-            CGContextStrokePath(c);
-        }
-        CGContextSetFillColorWithColor(c,col.CGColor);
-        CGContextFillEllipseInRect(c,CGRectMake(cx-1.25*s,cy+7*s,2.5*s,2.5*s));
-    }
-    if (_percent && p>.35) {
-        NSString *t=[NSString stringWithFormat:@"%ld%%",(long)lround(_level*100)];
-        NSMutableParagraphStyle *ps=[NSMutableParagraphStyle new]; ps.alignment=NSTextAlignmentCenter;
-        UIFont *f=[UIFont monospacedDigitSystemFontOfSize:7*s weight:UIFontWeightSemibold];
-        UIColor *col=[_fg colorWithAlphaComponent:MIN(1,(p-.35)/.5)];
-        [t drawInRect:CGRectMake(cx-r,cy-5.5*s,2*r,9*s) withAttributes:@{
-            NSFontAttributeName:f,NSForegroundColorAttributeName:col,NSParagraphStyleAttributeName:ps}];
-    }
-}
-@end
 
-@interface NativeDuo : NSObject
-@property(nonatomic,strong) NativeDuoRing *ring;
-@property(nonatomic,strong) NSMutableArray<UIView *> *icons;
-@property(nonatomic,strong) NSValue *savedFrame;
-@property(nonatomic,weak) UIView *battery;
-@property(nonatomic,strong) UIColor *oldTint;
+@interface NativeController : NSObject
 @property(nonatomic) BOOL folded;
-@property(nonatomic) BOOL animating;
+@property(nonatomic) BOOL transitioning;
 @end
 
-@implementation NativeDuo
+@implementation NativeController
 + (instancetype)shared {
-    static NativeDuo *x; static dispatch_once_t o;
-    dispatch_once(&o,^{x=[self new]; x.icons=[NSMutableArray array];});
-    return x;
-}
-- (void)restore {
-    if (!_folded) return;
-    _folded=NO; _animating=NO;
-    for (UIView *v in _icons) { v.hidden=NO; v.alpha=1; v.transform=CGAffineTransformIdentity; }
-    [_icons removeAllObjects];
-    if (_battery) _battery.tintColor=_oldTint;
-    [_ring removeFromSuperview]; _ring=nil;
-}
-- (void)collectIcons:(UIView *)v into:(NSMutableArray<UIView *> *)found battery:(UIView **)battery classes:(NSArray<NSString *> *)classes {
-    if (!v) return;
-    for (NSString *n in classes) {
-        Class c=NSClassFromString(n);
-        if (c && [v isKindOfClass:c]) { [found addObject:v]; if (!*battery) *battery=v; }
-    }
-    for (UIView *sv in v.subviews) [self collectIcons:sv into:found battery:battery classes:classes];
+    static NativeController *shared;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ shared = [self new]; });
+    return shared;
 }
 
-- (void)scanBar:(UIView *)v {
-    if (!v) return;
-    if ([NSStringFromClass(v.class) isEqualToString:@"STUIStatusBar"]) { [self fold:v]; return; }
-    for (UIView *sv in v.subviews) [self scanBar:sv];
+- (void)collect:(UIView *)view in:(NSMutableArray<UIView *> *)icons {
+    NSString *name = NSStringFromClass(view.class);
+    for (NSString *token in @[@"BatteryView", @"WifiSignalView", @"CellularSignalView"]) {
+        if ([name containsString:token]) {
+            [icons addObject:view];
+            return;
+        }
+    }
+    for (UIView *sub in view.subviews) [self collect:sub in:icons];
+}
+
+- (UIColor *)foregroundOf:(UIView *)bar {
+    @try {
+        id attrs = [bar valueForKey:@"styleAttributes"];
+        if ([attrs respondsToSelector:@selector(objectForKey:)]) {
+            UIColor *color = attrs[@"textColor"];
+            if ([color isKindOfClass:UIColor.class]) return color;
+        }
+        UIColor *color = [bar valueForKey:@"foregroundColor"];
+        if ([color isKindOfClass:UIColor.class]) return color;
+    } @catch (__unused NSException *e) {}
+    return UIColor.labelColor;
+}
+
+- (double)numberOf:(UIView *)view selector:(SEL)selector fallback:(double)fallback {
+    if (![view respondsToSelector:selector]) return fallback;
+    return ((double (*)(id, SEL))objc_msgSend)(view, selector);
+}
+
+- (void)unfold:(UIView *)bar {
+    NSDictionary<NSString *, NSDictionary *> *saved = objc_getAssociatedObject(bar, &kRestoreKey);
+    for (NSString *key in saved) {
+        NSDictionary *info = saved[key];
+        UIView *view = info[@"view"];
+        view.hidden = [info[@"hidden"] boolValue];
+        view.alpha = [info[@"alpha"] doubleValue];
+        view.center = [info[@"center"] CGPointValue];
+        view.transform = [info[@"transform"] CGAffineTransformValue];
+    }
+    [objc_getAssociatedObject(bar, &kRingKey) removeFromSuperview];
+    objc_setAssociatedObject(bar, &kRingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kRestoreKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kActiveKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.folded = NO;
+    self.transitioning = NO;
 }
 
 - (void)fold:(UIView *)bar {
-    if (_folded || _animating) return;
-    _animating=YES;
-    [self restore];
-    NSMutableArray<UIView *> *found=[NSMutableArray array];
-    UIView *battery=nil;
-    NSArray<NSString *> *classes=@[@"STUIStatusBarBatteryView",@"STUIStatusBarWifiSignalView",
-      @"STUIStatusBarCellularSignalView",@"STUIStatusBarSignalView",@"_UIBatteryView",
-      @"_UIStatusBarWifiSignalView",@"_UIStatusBarSignalView"];
-    [self collectIcons:bar into:found battery:&battery classes:classes];
-    if (!battery) { _animating=NO; return; }
-    _battery=battery;
-    _oldTint=battery.tintColor;
-    UIColor *fg=[bar valueForKey:@"foregroundColor"];
-    if (![fg isKindOfClass:UIColor.class]) fg=battery.tintColor;
-    if (!fg) fg=UIColor.labelColor;
-    CGRect b=[battery.superview convertRect:battery.frame toView:bar];
-    CGFloat h=MAX(30,MIN(36,b.size.height+8));
-    NativeDuoRing *ring=[[NativeDuoRing alloc] initWithFrame:CGRectMake(b.origin.x-12,b.origin.y-4,h+10,h)];
-    ring.fg=fg; ring.percent=(EDbl(@"BatteryPercentageEnabled",1)!=0);
-    ring.wifi=(found.count>1);
-    ring.progress=0;
-    double lvl=[battery respondsToSelector:@selector(chargePercent)] ? ((double (*)(id,SEL))objc_msgSend)(battery,@selector(chargePercent))/100.0 : .8;
-    if (lvl<=0 || lvl>1) lvl=.8;
-    ring.level=lvl;
-    [bar addSubview:ring];
-    _ring=ring;
-    _icons=found;
-    // Capture the actual on-screen geometry only now. No snapshot is made.
-    // Keep the originals visible while the native display was on screen; animate
-    // each original view's actual transform instead of replacing it.
-    CGFloat dx=ring.center.x-battery.center.x;
-    CGFloat dy=ring.center.y-battery.center.y;
-    battery.tintColor=fg;
-    _folded=YES;
-    [UIView animateWithDuration:0.65 delay:0 usingSpringWithDamping:.84 initialSpringVelocity:0
-      options:UIViewAnimationOptionCurveEaseOut animations:^{
-        for (UIView *v in found) {
-            v.transform=CGAffineTransformMakeScale(.08,.08);
-            v.center=CGPointMake(ring.center.x,ring.center.y);
-            v.alpha=0;
+    if (!bar || self.folded || self.transitioning) return;
+    self.transitioning = YES;
+    NSMutableArray<UIView *> *icons = [NSMutableArray array];
+    [self collect:bar in:icons];
+    if (icons.count == 0) { self.transitioning = NO; return; }
+
+    UIView *battery = nil, *wifi = nil, *cell = nil;
+    for (UIView *v in icons) {
+        NSString *name = NSStringFromClass(v.class);
+        if (!battery && [name containsString:@"BatteryView"]) battery = v;
+        if (!wifi && [name containsString:@"WifiSignalView"]) wifi = v;
+        if (!cell && [name containsString:@"CellularSignalView"]) cell = v;
+    }
+    if (!battery) { self.transitioning = NO; return; }
+
+    // Do not convert or mutate geometry before this point: the real UIKit
+    // hierarchy is the starting state, never a captured image.
+    UIView *host = bar;
+    CGRect b = [battery convertRect:battery.bounds toView:host];
+    double scale = MAX(0.70, MIN(1.40, NativeNumber(@"SizeScale", kGate, 1.0)));
+    CGFloat height = MIN(34.0, MAX(30.0, host.bounds.size.height - 4)) * scale;
+    CGFloat width = height * 32.0 / 34.0;
+    CGFloat margin = 24.0;
+    CGFloat x = MIN(host.bounds.size.width - width - margin,
+                    CGRectGetMaxX(b) - width);
+    x = MAX(8, x);
+    CGFloat y = CGRectGetMidY(b) - height / 2;
+    y = MAX(1, MIN(y, host.bounds.size.height - height - 1));
+
+    DuoGlyphView *ring = [[DuoGlyphView alloc] initWithFrame:CGRectMake(x, y, width, height)];
+    ring.userInteractionEnabled = NO;
+    ring.foreground = [self foregroundOf:bar];
+    ring.showsPercent = NativeNumber(@"BatteryPercentageEnabled", kEngine, 1) != 0;
+    double level = [self numberOf:battery selector:@selector(chargePercent) fallback:80.0];
+    if (level > 1.0) level /= 100.0;
+    ring.charge = MAX(0, MIN(1, level));
+    ring.charging = [self numberOf:battery selector:@selector(chargingState) fallback:0] != 0;
+    ring.lowPower = [self numberOf:battery selector:@selector(saverModeActive) fallback:0] != 0;
+    ring.wifiVisible = wifi != nil;
+    ring.wifiBars = wifi ? (NSInteger)[self numberOf:wifi selector:@selector(numberOfActiveBars) fallback:3] : 0;
+    ring.cellularBars = cell ? (NSInteger)[self numberOf:cell selector:@selector(numberOfActiveBars) fallback:3] : 0;
+    ring.alpha = 0;
+    [host addSubview:ring];
+
+    NSMutableDictionary *saved = [NSMutableDictionary dictionary];
+    for (UIView *v in icons) {
+        saved[@((unsigned long)v)] = @{ @"view":v, @"hidden":@(v.hidden),
+            @"alpha":@(v.alpha), @"center":[NSValue valueWithCGPoint:v.center],
+            @"transform":[NSValue valueWithCGAffineTransform:v.transform] };
+    }
+    objc_setAssociatedObject(bar, &kRestoreKey, saved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kRingKey, ring, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.folded = YES;
+
+    [UIView animateWithDuration:0.75 delay:0 usingSpringWithDamping:0.86
+        initialSpringVelocity:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        for (UIView *v in icons) {
+            v.center = ring.center;
+            v.transform = CGAffineTransformMakeScale(0.12, 0.12);
+            v.alpha = 0;
         }
-        ring.progress=1;
-        [ring setNeedsDisplay];
-      } completion:^(BOOL done){
-        if (!done) { self->_animating=NO; [self restore]; return; }
-        for (UIView *v in found) v.hidden=YES;
-        self->_animating=NO;
+        ring.alpha = 1;
+        ring.reveal = 1;
+    } completion:^(BOOL finished) {
+        self.transitioning = NO;
+        if (finished) for (UIView *v in icons) v.hidden = YES;
     }];
 }
-- (void)tick {
-    @try {
-        if (_folded) return;
-        if (Locked() || CoverSheet()) { [self restore]; return; }
-        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-            if (![s isKindOfClass:UIWindowScene.class]) continue;
-            for (UIWindow *w in ((UIWindowScene *)s).windows) {
-                if (w.hidden) continue;
-                            [self scanBar:w];<QuartzCore/QuartzCore.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
-#import <substrate.h>
-#import <dlfcn.h>
-#import <mach-o/dyld.h>
 
-// NativeDuo: no snapshots. Actual system icon views are moved on the main thread.
-
-static NSString *const kEngineDomain = @"iya.banana.duoicon";
-static NSString *const kGateDomain = @"com.ning.duobar";
-
-static CFPropertyListRef Copy(NSString *k, NSString *domain) {
-    return CFPreferencesCopyValue((__bridge CFStringRef)k, (__bridge CFStringRef)domain,
-        kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-}
-static double Dbl(NSString *k, double fallback) {
-    CFPropertyListRef v = Copy(k, kGateDomain);
-    double r = fallback;
-    if (v) {
-        if (CFGetTypeID(v) == CFNumberGetTypeID()) r = [(__bridge NSNumber *)v doubleValue];
-        else if (CFGetTypeID(v) == CFBooleanGetTypeID()) r = CFBooleanGetValue((CFBooleanRef)v) ? 1 : 0;
-        CFRelease(v);
+- (void)tick:(UIView *)bar {
+    if (!bar || !bar.window) return;
+    if (!NativeEngineEnabled() || NativeLocked() || NativeControlCenterVisible()) {
+        [self unfold:bar];
+        return;
     }
-    return r;
-}
-static BOOL Bool(NSString *k, BOOL fallback) { return Dbl(k, fallback) != 0; }
-static double EDbl(NSString *k, double fallback) {
-    CFPropertyListRef v = Copy(k, kEngineDomain);
-    double r = fallback;
-    if (v) {
-        if (CFGetTypeID(v) == CFNumberGetTypeID()) r = [(__bridge NSNumber *)v doubleValue];
-        else if (CFGetTypeID(v) == CFBooleanGetTypeID()) r = CFBooleanGetValue((CFBooleanRef)v) ? 1 : 0;
-        CFRelease(v);
+    if (!self.folded && !self.transitioning) {
+        // Let the system render its real icons before animating anything.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+            (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!self.folded && !NativeLocked() && !NativeControlCenterVisible()) [self fold:bar];
+        });
     }
-    return r;
 }
 
-static BOOL CoverSheet(void) {
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-        if (![s isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *w in ((UIWindowScene *)s).windows)
-            if ([[NSStringFromClass(w.class) lowercaseString] containsString:@"coversheet"] && !w.hidden && w.alpha > .01)
-                return YES;
-    }
-    return NO;
-}
-
-static BOOL Locked(void) {
-    Class c = NSClassFromString(@"SBLockScreenManager");
-    SEL sh = NSSelectorFromString(@"sharedInstance");
-    if (!c || ![c respondsToSelector:sh]) return NO;
-    id m = ((id (*)(id,SEL))objc_msgSend)(c,sh);
-    for (NSString *n in @[@"isUILocked", @"isLockScreenVisible"]) {
-        SEL s = NSSelectorFromString(n);
-        if ([m respondsToSelector:s] && ((BOOL(*)(id,SEL))objc_msgSend)(m,s)) return YES;
-    }
-    return NO;
-}
-
-@interface NativeDuoRing : UIView
-@property(nonatomic,strong) UIColor *fg;
-@property(nonatomic,strong) UIColor *accent;
-@property(nonatomic) double level;
-@property(nonatomic) double progress;
-@property(nonatomic) BOOL percent;
-@property(nonatomic) BOOL wifi;
-@end
-
-@implementation NativeDuoRing
-- (instancetype)initWithFrame:(CGRect)f {
-    if ((self=[super initWithFrame:f])) {
-        _fg=UIColor.labelColor; _accent=[UIColor colorWithRed:.204 green:.80 blue:.348 alpha:1];
-        _level=1; _percent=YES; _wifi=YES;
-        self.opaque=NO; self.backgroundColor=UIColor.clearColor;
-    }
-    return self;
-}
-- (void)drawRect:(CGRect)rect {
-    CGContextRef c=UIGraphicsGetCurrentContext();
-    CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
-    CGFloat s=MIN(w/34,h/34),cx=w/2,cy=h/2,r=12*s,lw=2*s;
-    double p=MAX(0,MIN(1,_progress));
-    CGContextSetLineWidth(c,lw);
-    CGContextSetLineCap(c,kCGLineCapRound);
-    UIColor *base=[_fg colorWithAlphaComponent:.22*p];
-    CGContextSetStrokeColorWithColor(c,base.CGColor);
-    CGContextAddArc(c,cx,cy,r,-M_PI_2,3*M_PI_2,0); CGContextStrokePath(c);
-    UIColor *fill=(_level<.20?[UIColor systemRedColor]:_accent);
-    CGContextSetStrokeColorWithColor(c,fill.CGColor);
-    CGContextAddArc(c,cx,cy,r,-M_PI_2,-M_PI_2+2*M_PI*_level*p,0);
-    CGContextStrokePath(c);
-    if (_wifi && p>.6) {
-        UIColor *col=[_fg colorWithAlphaComponent:p];
-        for (int i=0;i<3;i++) {
-            CGFloat rr=(4.5+i*3.1)*s;
-            CGContextSetStrokeColorWithColor(c,col.CGColor);
-            CGContextSetLineWidth(c,1.65*s);
-            CGContextAddArc(c,cx,cy+2.8*s,rr,-M_PI_2-.60,-M_PI_2+.60,0);
-            CGContextStrokePath(c);
+- (void)scan {
+    if (!NativeEngineEnabled() || NativeLocked() || NativeControlCenterVisible()) return;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.hidden) continue;
+            for (UIView *view in window.subviews) [self scanTree:view];
         }
-        CGContextSetFillColorWithColor(c,col.CGColor);
-        CGContextFillEllipseInRect(c,CGRectMake(cx-1.25*s,cy+7*s,2.5*s,2.5*s));
     }
-    if (_percent && p>.35) {
-        NSString *t=[NSString stringWithFormat:@"%ld%%",(long)lround(_level*100)];
-        NSMutableParagraphStyle *ps=[NSMutableParagraphStyle new]; ps.alignment=NSTextAlignmentCenter;
-        UIFont *f=[UIFont monospacedDigitSystemFontOfSize:7*s weight:UIFontWeightSemibold];
-        UIColor *col=[_fg colorWithAlphaComponent:MIN(1,(p-.35)/.5)];
-        [t drawInRect:CGRectMake(cx-r,cy-5.5*s,2*r,9*s) withAttributes:@{
-            NSFontAttributeName:f,NSForegroundColorAttributeName:col,NSParagraphStyleAttributeName:ps}];
+}
+
+- (void)scanTree:(UIView *)view {
+    if (!view) return;
+    if ([NSStringFromClass(view.class) isEqualToString:@"STUIStatusBar"]) {
+        [self tick:view];
+        return;
     }
+    for (UIView *sub in view.subviews) [self scanTree:sub];
 }
 @end
 
-@interface NativeDuo : NSObject
-@property(nonatomic,strong) NativeDuoRing *ring;
-@property(nonatomic,strong) NSMutableArray<UIView *> *icons;
-@property(nonatomic,strong) NSValue *savedFrame;
-@property(nonatomic,weak) UIView *battery;
-@property(nonatomic,strong) UIColor *oldTint;
-@property(nonatomic) BOOL folded;
-@property(nonatomic) BOOL animating;
-@end
-
-@implementation NativeDuo
-+ (instancetype)shared {
-    static NativeDuo *x; static dispatch_once_t o;
-    dispatch_once(&o,^{x=[self new]; x.icons=[NSMutableArray array];});
-    return x;
-}
-- (void)restore {
-    if (!_folded) return;
-    _folded=NO; _animating=NO;
-    for (UIView *v in _icons) { v.hidden=NO; v.alpha=1; v.transform=CGAffineTransformIdentity; }
-    [_icons removeAllObjects];
-    if (_battery) _battery.tintColor=_oldTint;
-    [_ring removeFromSuperview]; _ring=nil;
-}
-- (void)collectIcons:(UIView *)v into:(NSMutableArray<UIView *> *)found battery:(UIView **)battery classes:(NSArray<NSString *> *)classes {
-    if (!v) return;
-    for (NSString *n in classes) {
-        Class c=NSClassFromString(n);
-        if (c && [v isKindOfClass:c]) { [found addObject:v]; if (!*battery) *battery=v; }
-    }
-    for (UIView *sv in v.subviews) [self collectIcons:sv into:found battery:battery classes:classes];
+static void (*NativeOriginalLayout)(id, SEL);
+static void NativeLayout(id self, SEL _cmd) {
+    if (NativeOriginalLayout) NativeOriginalLayout(self, _cmd);
+    [[NativeController shared] tick:(UIView *)self];
 }
 
-- (void)scanBar:(UIView *)v {
-    if (!v) return;
-    if ([NSStringFromClass(v.class) isEqualToString:@"STUIStatusBar"]) { [self fold:v]; return; }
-    for (UIView *sv in v.subviews) [self scanBar:sv];
+static void NativeInstallHook(void) {
+    Class cls = objc_getClass("STUIStatusBar");
+    if (!cls) return;
+    Method method = class_getInstanceMethod(cls, @selector(layoutSubviews));
+    if (!method) return;
+    IMP current = method_getImplementation(method);
+    if (current == (IMP)NativeLayout) return;
+    NativeOriginalLayout = (void (*)(id, SEL))current;
+    method_setImplementation(method, (IMP)NativeLayout);
 }
 
-- (void)fold:(UIView *)bar {
-    if (_folded || _animating) return;
-    _animating=YES;
-    [self restore];
-    NSMutableArray<UIView *> *found=[NSMutableArray array];
-    UIView *battery=nil;
-    NSArray<NSString *> *classes=@[@"STUIStatusBarBatteryView",@"STUIStatusBarWifiSignalView",
-      @"STUIStatusBarCellularSignalView",@"STUIStatusBarSignalView",@"_UIBatteryView",
-      @"_UIStatusBarWifiSignalView",@"_UIStatusBarSignalView"];
-    [self collectIcons:bar into:found battery:&battery classes:classes];
-    if (!battery) { _animating=NO; return; }
-    _battery=battery;
-    _oldTint=battery.tintColor;
-    UIColor *fg=[bar valueForKey:@"foregroundColor"];
-    if (![fg isKindOfClass:UIColor.class]) fg=battery.tintColor;
-    if (!fg) fg=UIColor.labelColor;
-    CGRect b=[battery.superview convertRect:battery.frame toView:bar];
-    CGFloat h=MAX(30,MIN(36,b.size.height+8));
-    NativeDuoRing *ring=[[NativeDuoRing alloc] initWithFrame:CGRectMake(b.origin.x-12,b.origin.y-4,h+10,h)];
-    ring.fg=fg; ring.percent=(EDbl(@"BatteryPercentageEnabled",1)!=0);
-    ring.wifi=(found.count>1);
-    ring.progress=0;
-    double lvl=[battery respondsToSelector:@selector(chargePercent)] ? ((double (*)(id,SEL))objc_msgSend)(battery,@selector(chargePercent))/100.0 : .8;
-    if (lvl<=0 || lvl>1) lvl=.8;
-    ring.level=lvl;
-    [bar addSubview:ring];
-    _ring=ring;
-    _icons=found;
-    // Capture the actual on-screen geometry only now. No snapshot is made.
-    // Keep the originals visible while the native display was on screen; animate
-    // each original view's actual transform instead of replacing it.
-    CGFloat dx=ring.center.x-battery.center.x;
-    CGFloat dy=ring.center.y-battery.center.y;
-    battery.tintColor=fg;
-    _folded=YES;
-    [UIView animateWithDuration:0.65 delay:0 usingSpringWithDamping:.84 initialSpringVelocity:0
-      options:UIViewAnimationOptionCurveEaseOut animations:^{
-        for (UIView *v in found) {
-            v.transform=CGAffineTransformMakeScale(.08,.08);
-            v.center=CGPointMake(ring.center.x,ring.center.y);
-            v.alpha=0;
-        }
-        ring.progress=1;
-        [ring setNeedsDisplay];
-      } completion:^(BOOL done){
-        if (!done) { self->_animating=NO; [self restore]; return; }
-        for (UIView *v in found) v.hidden=YES;
-        self->_animating=NO;
-    }];
+static void NativeImageAdded(const struct mach_header *header, intptr_t slide) {
+    (void)header; (void)slide;
+    dispatch_async(dispatch_get_main_queue(), ^{ NativeInstallHook(); });
 }
-- (void)tick {
-    @try {
-        if (_folded) return;
-        if (Locked() || CoverSheet()) { [self restore]; return; }
-        for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-            if (![s isKindOfClass:UIWindowScene.class]) continue;
-            for (UIWindow *w in ((UIWindowScene *)s).windows) {
-                if (w.hidden) continue;
-                void (^unusedWalk)(UIView*)=^(UIView *v){
-                    if (!v) return;
-                    if ([NSStringFromClass(v.class) isEqualToString:@"STUIStatusBar"]) { [self fold:v]; return; }
-                    for (UIView *sv in v.subviews) walk(sv);
-                };
-                walk(w);
-            }
-        }
-    } @catch (__unused NSException *e) {
-        _animating=NO;
+
+__attribute__((constructor)) static void NativeInit(void) {
+    @autoreleasepool {
+        if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
+        _dyld_register_func_for_add_image(NativeImageAdded);
+            (void)h; (void)s;
+            dispatch_async(dispatch_get_main_queue(), ^{ NativeInstallHook(); });
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                NativeInstallHook();
+                [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(__unused NSTimer *t) {
+                    [[NativeController shared] scan];
+                }];
+            });
     }
 }
-@end
-
-static void (*origLayout)(id,SEL);
-static void NewLayout(id self,SEL _cmd) {
-    origLayout(self,_cmd);
-    [[NativeDuo shared] tick];
-}
-
-static void Start(void) {
-    if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
-    Class c=NSClassFromString(@"STUIStatusBar");
-    Method m=c?class_getInstanceMethod(c,@selector(layoutSubviews)):NULL;
-    if (m) {
-        origLayout=(void (*)(id,SEL))method_getImplementation(m);
-        method_setImplementation(m,(IMP)NewLayout);
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-        [NSTimer scheduledTimerWithTimeInterval:.5 repeats:YES block:^(__unused NSTimer *t){ [[NativeDuo shared] tick]; }];
-    });
-}
-
-__attribute__((constructor)) static void Init(void) { Start(); }

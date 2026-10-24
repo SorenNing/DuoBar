@@ -20,7 +20,7 @@ jobs:
       - run: |
           set -euo pipefail
           mkdir -p build/native/Sources out
-          cp src/NativeDuo.xm build/native/Sources/NativeDuo.xm
+          cp src/NativeDuo.xm src/DuoGlyphView.h src/DuoGlyphView.m build/native/Sources/
           cp src/build/NativeMakefile build/native/Makefile
           cp src/DuoBarNative.plist build/native/DuoBarNative.plist
           gmake -C build/native clean all THEOS_PACKAGE_SCHEME=roothide TARGET=iphone:clang:16.5:16.0
