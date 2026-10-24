@@ -20,8 +20,8 @@ jobs:
       - run: |
           set -euo pipefail
           mkdir -p build/ncgate/Sources out
-          cp src/NCGate.xm build/ncgate/Sources/NCGate.xm
-          cp src/ncgate-Makefile build/ncgate/Makefile
+          cp src/Gate.xm build/ncgate/Sources/Gate.xm
+          cp src/build/Makefile build/ncgate/Makefile
           cp src/DuoBarNCGate.plist build/ncgate/DuoBarNCGate.plist
           gmake -C build/ncgate clean all THEOS_PACKAGE_SCHEME=roothide TARGET=iphone:clang:16.5:16.0
           cp build/ncgate/.theos/obj/debug/arm64e/DuoBarNCGate.dylib out/
