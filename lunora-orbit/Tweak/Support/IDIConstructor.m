@@ -14,6 +14,7 @@ static void IDIScanTree(UIView *view) {
 __attribute__((constructor)) static void IDILunoraBootstrap(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/Library/com.ning.duobar/disabled"]) return;
         IDIInstallSwizzles();
         for (double delay=0.5;delay<=6;delay+=0.75) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay*NSEC_PER_SEC)),

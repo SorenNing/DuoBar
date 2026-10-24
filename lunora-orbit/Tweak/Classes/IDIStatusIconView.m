@@ -52,11 +52,12 @@ static double IDIDouble(id view, NSString *selector, double fallback) {
     return ((double(*)(id,SEL))objc_msgSend)(view,sel);
 }
 -(void)refreshFromBattery:(UIView *)battery wifi:(UIView *)wifi cell:(UIView *)cell {
-    double level=IDIDouble(battery,@"chargePercent",80);
+    double level=80;
+    @try { level=IDIDouble(battery,@"chargePercent",80); } @catch (__unused NSException *e) {}
     if (level>1) level/=100.0;
     self.duoGlyph.charge=MAX(0,MIN(1,level));
-    self.duoGlyph.charging=IDIDouble(battery,@"chargingState",0)!=0;
-    self.duoGlyph.lowPower=IDIDouble(battery,@"saverModeActive",0)!=0;
+    @try { self.duoGlyph.charging=IDIDouble(battery,@"chargingState",0)!=0; } @catch (__unused NSException *e) {}
+    @try { self.duoGlyph.lowPower=IDIDouble(battery,@"saverModeActive",0)!=0; } @catch (__unused NSException *e) {}
     self.duoGlyph.showsPercent=IDIPrefBool("BatteryPercentageEnabled",YES);
     self.duoGlyph.wifiVisible=wifi!=nil;
     self.duoGlyph.wifiBars=wifi?(NSInteger)IDIDouble(wifi,@"numberOfActiveBars",3):0;
