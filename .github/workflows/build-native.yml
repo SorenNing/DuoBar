@@ -1,0 +1,33 @@
+name: Build DuoBar native engine
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install make ldid dpkg gnu-tar xz rsync
+      - run: |
+          echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+      - run: |
+          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$THEOS"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$RUNNER_TEMP/sdks"
+          git -C "$RUNNER_TEMP/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks" && cp -R "$RUNNER_TEMP/sdks/iPhoneOS16.5.sdk" "$THEOS/sdks/"
+      - run: |
+          set -euo pipefail
+          mkdir -p build/native/Sources out
+          cp src/NativeDuo.xm build/native/Sources/NativeDuo.xm
+          cp src/build/NativeMakefile build/native/Makefile
+          cp src/DuoBarNative.plist build/native/DuoBarNative.plist
+          gmake -C build/native clean all THEOS_PACKAGE_SCHEME=roothide TARGET=iphone:clang:16.5:16.0
+          cp build/native/.theos/obj/debug/arm64e/DuoBarNative.dylib out/
+          ldid -S -Cadhoc out/DuoBarNative.dylib
+          cp src/DuoBarNative.plist out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DuoBarNative-arm64e
+          path: out/*
