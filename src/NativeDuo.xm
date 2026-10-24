@@ -246,15 +246,13 @@ static void NativeInstallHook(void) {
     method_setImplementation(method, (IMP)NativeLayout);
 }
 
-static void NativeImageAdded(const struct mach_header *header, intptr_t slide) {
-    (void)header; (void)slide;
-    dispatch_async(dispatch_get_main_queue(), ^{ NativeInstallHook(); });
-}
-
 __attribute__((constructor)) static void NativeInit(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
-        _dyld_register_func_for_add_image(NativeImageAdded);
+        for (double delay = 0.4; delay <= 6.0; delay += 0.6) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{ NativeInstallHook(); });
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{
                 NativeInstallHook();
