@@ -3,6 +3,8 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach-o/dyld.h>
+#import <string.h>
 #import <QuartzCore/QuartzCore.h>
 #import <substrate.h>
 
@@ -114,6 +116,27 @@ static void DuoTick(void) {
     DuoCCVisible = cc;
 }
 
+
+// NovaUnlock ships a self-made crash guard: if SpringBoard dies within eight
+// seconds of loading its core, the run counts as a crash, and after two such
+// runs the engine disables itself until the package is reinstalled. A respring
+// inside that window is indistinguishable from a crash to it, which is what
+// kept turning the animations off. Once the core has clearly stayed loaded for
+// ten seconds we know it is healthy, so the stale counter is cleared.
+static void DuoClearNovaGuardIfHealthy(void) {
+    BOOL coreLoaded = NO;
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (name && strstr(name, "NovaUnlockCore.dylib")) { coreLoaded = YES; break; }
+    }
+    if (!coreLoaded) return;
+    NSString *guard = @"/var/mobile/Library/Preferences/com.sanderzen.novaunlock.guard";
+    if ([NSFileManager.defaultManager fileExistsAtPath:guard]) {
+        [NSFileManager.defaultManager removeItemAtPath:guard error:NULL];
+        NSLog(@"[DuoBar] NovaUnlock core healthy; cleared stale crash guard");
+    }
+}
+
 static void DuoInstallHooks(void) {
     MSHookFunction((void *)CFPreferencesCopyAppValue, (void *)DuoCopyAppValue,
         (void **)&origCFPreferencesCopyAppValue);
@@ -130,6 +153,8 @@ __attribute__((constructor)) static void DuoGateInit(void) {
                 [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(__unused NSTimer *timer) {
                     DuoTick();
                 }];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)),
+                    dispatch_get_main_queue(), ^{ DuoClearNovaGuardIfHealthy(); });
             });
     }
 }
