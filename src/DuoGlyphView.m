@@ -5,6 +5,8 @@ static CGFloat DuoRadians(CGFloat degrees) { return degrees * (CGFloat)M_PI / 18
 
 @interface DuoGlyphView ()
 @property(nonatomic, strong) UIImageView *hotspotImageView;
+@property(nonatomic, strong) UIImageView *wifiGlyphView;
+@property(nonatomic, strong) UIImageView *cellularGlyphView;
 @end
 
 static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, UIColor *color) {
@@ -29,6 +31,7 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
         self.accessibilityElementsHidden = YES;
         self.contentMode = UIViewContentModeRedraw;
         self.foreground = UIColor.labelColor;
+
         self.hotspotImageView = [[UIImageView alloc] initWithFrame:CGRectZero];
         self.hotspotImageView.contentMode = UIViewContentModeScaleAspectFit;
         self.hotspotImageView.userInteractionEnabled = NO;
@@ -39,8 +42,35 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
         self.hotspotImageView.tintColor = self.foreground;
         self.hotspotImageView.hidden = YES;
         [self addSubview:self.hotspotImageView];
+
+        self.wifiGlyphView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        self.cellularGlyphView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        for (UIImageView *view in @[self.wifiGlyphView, self.cellularGlyphView]) {
+            view.contentMode = UIViewContentModeScaleAspectFit;
+            view.userInteractionEnabled = NO;
+            view.isAccessibilityElement = NO;
+            view.accessibilityElementsHidden = YES;
+            view.hidden = YES;
+            [self addSubview:view];
+        }
     }
     return self;
+}
+
+- (void)setNativeWifiImage:(UIImage *)image {
+    self.wifiGlyphView.image = image ? [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] : nil;
+    self.wifiGlyphView.tintColor = self.foreground ?: UIColor.labelColor;
+    self.wifiGlyphView.hidden = (image == nil);
+    [self setNeedsLayout];
+    [self setNeedsDisplay];
+}
+
+- (void)setNativeCellularImage:(UIImage *)image {
+    self.cellularGlyphView.image = image ? [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] : nil;
+    self.cellularGlyphView.tintColor = self.foreground ?: UIColor.labelColor;
+    self.cellularGlyphView.hidden = (image == nil);
+    [self setNeedsLayout];
+    [self setNeedsDisplay];
 }
 
 - (void)layoutSubviews {
@@ -50,6 +80,26 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
     CGFloat top = (self.bounds.size.height - 34.0 * scale) / 2.0;
     self.hotspotImageView.frame = CGRectMake(left + 8.5 * scale, top + 12.5 * scale,
                                               15.0 * scale, 10.0 * scale);
+
+    // Fit an image into a box, keeping its aspect ratio.
+    void (^place)(UIImageView *, CGRect) = ^(UIImageView *view, CGRect box) {
+        if (!view.image) return;
+        CGSize natural = view.image.size;
+        if (natural.width <= 0 || natural.height <= 0) natural = CGSizeMake(16, 12);
+        CGFloat ratio = natural.width / natural.height;
+        CGFloat width = box.size.width;
+        CGFloat height = width / ratio;
+        if (height > box.size.height) {
+            height = box.size.height;
+            width = height * ratio;
+        }
+        CGFloat x = box.origin.x + (box.size.width - width) / 2.0;
+        CGFloat y = box.origin.y + (box.size.height - height) / 2.0;
+        view.frame = CGRectMake(left + x * scale, top + y * scale,
+                                MAX(1.0, width * scale), MAX(1.0, height * scale));
+    };
+    place(self.wifiGlyphView, CGRectMake(9.0, 9.0, 14.0, 12.0));
+    place(self.cellularGlyphView, CGRectMake(8.5, 21.5, 15.0, 10.5));
 }
 
 - (void)setHotspotActive:(BOOL)hotspotActive {
@@ -69,6 +119,8 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
 - (void)setForeground:(UIColor *)foreground {
     _foreground = foreground;
     self.hotspotImageView.tintColor = foreground ?: UIColor.labelColor;
+    self.wifiGlyphView.tintColor = foreground ?: UIColor.labelColor;
+    self.cellularGlyphView.tintColor = foreground ?: UIColor.labelColor;
     [self setNeedsDisplay];
 }
 
@@ -113,7 +165,7 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
 
     if (self.hotspotActive) {
         // The matching iOS status-bar image is drawn by hotspotImageView.
-    } else if (self.wifiVisible) {
+    } else if (self.wifiVisible && !self.wifiGlyphView.image) {
         CGContextSaveGState(context);
         CGContextTranslateCTM(context, 9, 13);
         CGContextScaleCTM(context, 0.78, 0.78);
@@ -121,12 +173,14 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
         CGContextRestoreGState(context);
     }
 
-    NSInteger cellular = MAX(0, MIN(4, self.cellularBars));
-    const CGPoint dots[] = {{7.5, 28}, {13, 30.2}, {19, 30.2}, {24.5, 28}};
-    for (NSInteger i = 0; i < 4; i++) {
-        [(i < cellular ? foreground : inactive) setFill];
-        [[UIBezierPath bezierPathWithOvalInRect:
-            CGRectMake(dots[i].x - 1.65, dots[i].y - 1.65, 3.3, 3.3)] fill];
+    if (!self.cellularGlyphView.image) {
+        NSInteger cellular = MAX(0, MIN(4, self.cellularBars));
+        const CGPoint dots[] = {{7.5, 28}, {13, 30.2}, {19, 30.2}, {24.5, 28}};
+        for (NSInteger i = 0; i < 4; i++) {
+            [(i < cellular ? foreground : inactive) setFill];
+            [[UIBezierPath bezierPathWithOvalInRect:
+                CGRectMake(dots[i].x - 1.65, dots[i].y - 1.65, 3.3, 3.3)] fill];
+        }
     }
 
     if (self.charging) {
@@ -158,8 +212,7 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
 
     UIBezierPath *inner = [UIBezierPath bezierPath];
     [inner moveToPoint:CGPointMake(4.4, 7.25)];
-    [inner addCurveToPoint:CGPointMake(13.6, 7.25)
-            controlPoint1:CGPointMake(7, 5) controlPoint2:CGPointMake(11, 5)];
+    [inner addLineToPoint:CGPointMake(13.6, 7.25)];
     inner.lineWidth = 2.15;
     inner.lineCapStyle = kCGLineCapRound;
     [(bars >= 2 ? foreground : inactive) setStroke];
