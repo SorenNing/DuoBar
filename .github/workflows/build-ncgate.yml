@@ -19,11 +19,14 @@ jobs:
           mkdir -p "$THEOS/sdks" && cp -R "$RUNNER_TEMP/sdks/iPhoneOS16.5.sdk" "$THEOS/sdks/"
       - run: |
           set -euo pipefail
-          gmake -C ncgate clean all THEOS_PACKAGE_SCHEME=roothide TARGET=iphone:clang:16.5:16.0
-          mkdir -p out
-          cp ncgate/.theos/obj/debug/arm64e/DuoBarNCGate.dylib out/
+          mkdir -p build/ncgate/Sources out
+          cp src/NCGate.xm build/ncgate/Sources/NCGate.xm
+          cp src/ncgate-Makefile build/ncgate/Makefile
+          cp src/DuoBarNCGate.plist build/ncgate/DuoBarNCGate.plist
+          gmake -C build/ncgate clean all THEOS_PACKAGE_SCHEME=roothide TARGET=iphone:clang:16.5:16.0
+          cp build/ncgate/.theos/obj/debug/arm64e/DuoBarNCGate.dylib out/
           ldid -S -Cadhoc out/DuoBarNCGate.dylib
-          cp ncgate/DuoBarNCGate.plist out/
+          cp src/DuoBarNCGate.plist out/
       - uses: actions/upload-artifact@v4
         with:
           name: DuoBarNCGate-arm64e
