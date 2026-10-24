@@ -15,5 +15,5 @@
 @property(nonatomic,strong) UITextField *idiValueLabel;
 @property(nonatomic,strong) NSNumberFormatter *idiNumberFormatter;
 @property(nonatomic,copy) NSString *idiUnit;
-@property(nonatomic,weak) UISlider *idiBoundSlider;
+@property(nonatomic,strong) UISlider *idiBoundSlider;
 @end

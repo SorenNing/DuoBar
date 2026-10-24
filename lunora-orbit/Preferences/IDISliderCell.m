@@ -1,7 +1,7 @@
 #import "IDISliderCell.h"
 
 @implementation IDISliderCell
--(instancetype)initWithStyle:(long long)style reuseIdentifier:(NSString *)identifier specifier:(PSSpecifier *)specifier {
+-(instancetype)initWithStyle:(long)style reuseIdentifier:(NSString *)identifier specifier:(PSSpecifier *)specifier {
     if ((self=[super initWithStyle:style reuseIdentifier:identifier specifier:specifier])) {
         self.selectionStyle=UITableViewCellSelectionStyleNone;
         self.accessoryType=UITableViewCellAccessoryNone;
