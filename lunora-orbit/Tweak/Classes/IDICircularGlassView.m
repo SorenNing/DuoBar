@@ -13,10 +13,6 @@
     return self;
 }
 -(void)updateWithDateBadge:(CGRect)badge fill:(UIColor *)fill opacity:(double)opacity foreground:(UIColor *)foreground {
-    _dateBadge=badge;
-    _fill=fill;
-    _opacity=opacity;
-    _foreground=foreground;
     self.backgroundColor=[fill colorWithAlphaComponent:MAX(0,MIN(1,opacity))];
     self.layer.borderColor=foreground.CGColor;
     self.layer.borderWidth=0.7;
