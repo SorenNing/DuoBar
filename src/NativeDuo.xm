@@ -256,9 +256,6 @@ __attribute__((constructor)) static void NativeInit(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         _dyld_register_func_for_add_image(NativeImageAdded);
-            (void)h; (void)s;
-            dispatch_async(dispatch_get_main_queue(), ^{ NativeInstallHook(); });
-        });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{
                 NativeInstallHook();
