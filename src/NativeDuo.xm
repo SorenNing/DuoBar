@@ -5,15 +5,15 @@
 #import <objc/message.h>
 #import "DuoGlyphView.h"
 
-// The real UIKit hierarchy is the only source of truth. The ring shows a live
-// snapshot of the native Wi-Fi and cellular glyphs; the stock views are then
-// folded away, and every layout pass while folded re-suppresses them, so a
-// glyph the system re-shows or rebuilds can never flash back on screen.
+// No snapshot is taken anywhere. The visible UIKit views are transformed only
+// after the real native icons have had time to settle.
 
 static NSString *const kEngine = @"iya.banana.duoicon";
+static NSString *const kGate = @"com.ning.duobar";
+static NSString *const kBarKey = @"NativeDuo.Bar";
 static NSString *const kRingKey = @"NativeDuo.Ring";
-static NSString *const kRestoreKey = @"NativeDuo.Restore";
 static NSString *const kActiveKey = @"NativeDuo.Active";
+static NSString *const kRestoreKey = @"NativeDuo.Restore";
 
 static CFPropertyListRef NativeCopy(NSString *key, NSString *domain) {
     return CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -63,47 +63,8 @@ static BOOL NativeLocked(void) {
     return NO;
 }
 
-typedef NS_ENUM(NSInteger, DuoGlyphKind) {
-    DuoGlyphKindNone = 0,
-    DuoGlyphKindBattery,
-    DuoGlyphKindWifi,
-    DuoGlyphKindCellular,
-    DuoGlyphKindOther,
-};
-
-// Render the live native glyph into a template image: the ring then draws the
-// system artwork itself, tinted with the bar's own foreground colour.
-static UIImage *DuoGlyphImage(UIView *view) {
-    if (!view) return nil;
-    CGSize size = view.bounds.size;
-    if (size.width < 1.0 || size.height < 1.0) return nil;
-    UIImage *image = nil;
-    @try {
-        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
-        image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-            (void)context;
-            [view drawViewHierarchyInRect:CGRectMake(0, 0, size.width, size.height)
-                       afterScreenUpdates:NO];
-        }];
-    } @catch (__unused NSException *e) {
-        image = nil;
-    }
-    return image ? [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] : nil;
-}
-
-static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
-    if (!view) return DuoGlyphKindNone;
-    NSString *name = NSStringFromClass(view.class);
-    if (name.length == 0) return DuoGlyphKindNone;
-    if ([name containsString:@"BatteryView"]) return DuoGlyphKindBattery;
-    if ([name containsString:@"Wifi"]) return DuoGlyphKindWifi;
-    if ([name containsString:@"Cellular"]) return DuoGlyphKindCellular;
-    if ([name containsString:@"SignalView"] ||
-        [name isEqualToString:@"STUIStatusBarImageView"]) return DuoGlyphKindOther;
-    return DuoGlyphKindNone;
-}
-
 @interface NativeController : NSObject
+@property(nonatomic) BOOL folded;
 @property(nonatomic) BOOL transitioning;
 @end
 
@@ -115,51 +76,19 @@ static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
     return shared;
 }
 
-#pragma mark - Glyph discovery
-
-// Collect the stock glyphs that live in the trailing (right) half of the bar.
-// The left half carries indicators like the alarm or Do-Not-Disturb icon and
-// must never be folded into the ring.
-- (void)collectIn:(UIView *)parent host:(UIView *)host rightEdge:(CGFloat)rightEdge
-             into:(NSMutableArray<UIView *> *)icons {
-    for (UIView *sub in parent.subviews) {
-        DuoGlyphKind kind = DuoGlyphKindOf(sub);
-        if (kind != DuoGlyphKindNone && !sub.hidden && sub.alpha > 0.01) {
-            CGRect frame = [sub convertRect:sub.bounds toView:host];
-            if (CGRectGetMidX(frame) > rightEdge) {
-                BOOL covered = NO;
-                for (UIView *known in icons) {
-                    if ([sub isDescendantOfView:known]) { covered = YES; break; }
-                }
-                if (!covered) [icons addObject:sub];
-            }
-        }
-        [self collectIn:sub host:host rightEdge:rightEdge into:icons];
+- (void)collect:(UIView *)view in:(NSMutableArray<UIView *> *)icons {
+    if (!view) return;
+    NSString *name = NSStringFromClass(view.class);
+    if ([name isEqualToString:@"STUIStatusBarImageView"] ||
+        [name isEqualToString:@"STUIStatusBarStringView"] ||
+        [name containsString:@"STUIStatusBarBatteryView"] ||
+        [name containsString:@"STUIStatusBarSignalView"] ||
+        [name containsString:@"BatteryView"] ||
+        [name containsString:@"WifiSignalView"] ||
+        [name containsString:@"CellularSignalView"]) {
+        if (!view.hidden && view.alpha > 0.01) [icons addObject:view];
     }
-}
-
-- (NSMutableArray<UIView *> *)iconsIn:(UIView *)bar {
-    NSMutableArray<UIView *> *icons = [NSMutableArray array];
-    [self collectIn:bar host:bar rightEdge:bar.bounds.size.width * 0.5 into:icons];
-    return icons;
-}
-
-#pragma mark - Native values (KVC: never assume a C return type)
-
-- (double)doubleOf:(UIView *)view key:(NSString *)key fallback:(double)fallback {
-    @try {
-        id value = [view valueForKey:key];
-        if ([value respondsToSelector:@selector(doubleValue)]) return [value doubleValue];
-    } @catch (__unused NSException *e) {}
-    return fallback;
-}
-
-- (NSInteger)integerOf:(UIView *)view key:(NSString *)key fallback:(NSInteger)fallback {
-    @try {
-        id value = [view valueForKey:key];
-        if ([value respondsToSelector:@selector(integerValue)]) return [value integerValue];
-    } @catch (__unused NSException *e) {}
-    return fallback;
+    for (UIView *sub in view.subviews) [self collect:sub in:icons];
 }
 
 - (UIColor *)foregroundOf:(UIView *)bar {
@@ -175,10 +104,9 @@ static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
     return UIColor.labelColor;
 }
 
-#pragma mark - Fold state
-
-- (BOOL)isFolded:(UIView *)bar {
-    return [objc_getAssociatedObject(bar, &kActiveKey) boolValue];
+- (double)numberOf:(UIView *)view selector:(SEL)selector fallback:(double)fallback {
+    if (![view respondsToSelector:selector]) return fallback;
+    return ((double (*)(id, SEL))objc_msgSend)(view, selector);
 }
 
 - (void)unfold:(UIView *)bar {
@@ -186,79 +114,57 @@ static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
     for (NSString *key in saved) {
         NSDictionary *info = saved[key];
         UIView *view = info[@"view"];
-        if (!view) continue;
         view.hidden = [info[@"hidden"] boolValue];
         view.alpha = [info[@"alpha"] doubleValue];
         view.center = [info[@"center"] CGPointValue];
         view.transform = [info[@"transform"] CGAffineTransformValue];
     }
-    UIView *ring = objc_getAssociatedObject(bar, &kRingKey);
-    [ring removeFromSuperview];
+    [objc_getAssociatedObject(bar, &kRingKey) removeFromSuperview];
     objc_setAssociatedObject(bar, &kRingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(bar, &kRestoreKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(bar, &kActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kActiveKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.folded = NO;
     self.transitioning = NO;
 }
 
-// While folded, re-suppress every stock glyph the system brings back (a
-// relayout resetting `hidden`, a rebuilt icon view, a late `addSubview`).
-// Each pass records the original state once, so the unfold can restore it.
-- (void)maintain:(UIView *)bar {
-    if (self.transitioning || ![self isFolded:bar]) return;
-    NSMutableDictionary *saved = objc_getAssociatedObject(bar, &kRestoreKey);
-    if (!saved) return;
-    for (UIView *view in [self iconsIn:bar]) {
-        NSString *key = [NSString stringWithFormat:@"%p", view];
-        if (!saved[key]) {
-            saved[key] = @{ @"view":view, @"hidden":@(view.hidden),
-                @"alpha":@(view.alpha), @"center":[NSValue valueWithCGPoint:view.center],
-                @"transform":[NSValue valueWithCGAffineTransform:view.transform] };
-        }
-        view.hidden = YES;
-    }
-}
-
-#pragma mark - Fold
-
 - (void)fold:(UIView *)bar {
-    if (!bar || self.transitioning || [self isFolded:bar]) return;
+    if (!bar || self.folded || self.transitioning) return;
     self.transitioning = YES;
-
-    NSMutableArray<UIView *> *icons = [self iconsIn:bar];
+    NSMutableArray<UIView *> *icons = [NSMutableArray array];
+    [self collect:bar in:icons];
     if (icons.count == 0) { self.transitioning = NO; return; }
 
     UIView *battery = nil, *wifi = nil, *cell = nil;
-    for (UIView *view in icons) {
-        switch (DuoGlyphKindOf(view)) {
-            case DuoGlyphKindBattery: if (!battery) battery = view; break;
-            case DuoGlyphKindWifi: if (!wifi) wifi = view; break;
-            case DuoGlyphKindCellular: if (!cell) cell = view; break;
-            default: break;
-        }
+    for (UIView *v in icons) {
+        NSString *name = NSStringFromClass(v.class);
+        if (!battery && [name containsString:@"BatteryView"]) battery = v;
+        if (!wifi && [name containsString:@"WifiSignalView"]) wifi = v;
+        if (!cell && [name containsString:@"CellularSignalView"]) cell = v;
     }
     if (!battery) {
-        // Some builds expose the trailing icons only as plain image views.
-        for (UIView *view in icons.reverseObjectEnumerator) {
-            if (DuoGlyphKindOf(view) == DuoGlyphKindBattery) { battery = view; break; }
-            if (!battery) battery = view;
+        // Lunora uses generic STUIStatusBarImageView for trailing status icons;
+        // pick the last visible image as the battery anchor, never abandon the bar.
+        for (UIView *v in icons.reverseObjectEnumerator) {
+            if ([NSStringFromClass(v.class) isEqualToString:@"STUIStatusBarImageView"]) {
+                battery = v; break;
+            }
         }
     }
     if (!battery) { self.transitioning = NO; return; }
 
-    // Capture the native glyphs while they are still on screen.
-    UIImage *wifiImage = DuoGlyphImage(wifi);
-    UIImage *cellImage = DuoGlyphImage(cell);
-
+    // Do not convert or mutate geometry before this point: the real UIKit
+    // hierarchy is the starting state, never a captured image.
     UIView *host = bar;
-    CGRect batteryFrame = [battery convertRect:battery.bounds toView:host];
+    CGRect b = [battery convertRect:battery.bounds toView:host];
     double scale = NativeNumber(@"OrbitScale", kEngine, 100.0) / 100.0;
     scale = MAX(0.50, MIN(1.50, scale));
     CGFloat height = MIN(34.0, MAX(30.0, host.bounds.size.height - 4)) * scale;
     CGFloat width = height * 32.0 / 34.0;
     CGFloat margin = 24.0;
-    CGFloat x = MIN(host.bounds.size.width - width - margin, CGRectGetMaxX(batteryFrame) - width);
+    CGFloat x = MIN(host.bounds.size.width - width - margin,
+                    CGRectGetMaxX(b) - width);
     x = MAX(8, x);
-    CGFloat y = CGRectGetMidY(batteryFrame) - height / 2;
+    CGFloat y = CGRectGetMidY(b) - height / 2;
     y = MAX(1, MIN(y, host.bounds.size.height - height - 1));
 
     DuoGlyphView *ring = [[DuoGlyphView alloc] initWithFrame:CGRectMake(x, y, width, height)];
@@ -266,49 +172,40 @@ static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
     ring.foreground = [self foregroundOf:bar];
     ring.showsPercent = NativeNumber(@"BatteryPercentageEnabled", kEngine, 1) != 0;
     ring.contentScale = NativeNumber(@"RightNetworkIconScale", kEngine, 47.0) / 100.0;
-    [ring setNativeWifiImage:wifiImage];
-    [ring setNativeCellularImage:cellImage];
-
-    double level = [self doubleOf:battery key:@"chargePercent" fallback:80.0];
+    double level = [self numberOf:battery selector:@selector(chargePercent) fallback:80.0];
     if (level > 1.0) level /= 100.0;
     ring.charge = MAX(0, MIN(1, level));
-    ring.charging = [self integerOf:battery key:@"chargingState" fallback:0] != 0;
-    ring.lowPower = [self integerOf:battery key:@"saverModeActive" fallback:0] != 0;
-    ring.wifiVisible = (wifi != nil);
-    ring.wifiBars = wifi ? [self integerOf:wifi key:@"numberOfActiveBars" fallback:3] : 0;
-    ring.cellularBars = cell ? [self integerOf:cell key:@"numberOfActiveBars" fallback:3] : 0;
+    ring.charging = [self numberOf:battery selector:@selector(chargingState) fallback:0] != 0;
+    ring.lowPower = [self numberOf:battery selector:@selector(saverModeActive) fallback:0] != 0;
+    ring.wifiVisible = wifi != nil;
+    ring.wifiBars = wifi ? (NSInteger)[self numberOf:wifi selector:@selector(numberOfActiveBars) fallback:3] : 0;
+    ring.cellularBars = cell ? (NSInteger)[self numberOf:cell selector:@selector(numberOfActiveBars) fallback:3] : 0;
     [host addSubview:ring];
 
     NSMutableDictionary *saved = [NSMutableDictionary dictionary];
-    for (UIView *view in icons) {
-        saved[[NSString stringWithFormat:@"%p", view]] = @{ @"view":view, @"hidden":@(view.hidden),
-            @"alpha":@(view.alpha), @"center":[NSValue valueWithCGPoint:view.center],
-            @"transform":[NSValue valueWithCGAffineTransform:view.transform] };
+    for (UIView *v in icons) {
+        saved[@((unsigned long)v)] = @{ @"view":v, @"hidden":@(v.hidden),
+            @"alpha":@(v.alpha), @"center":[NSValue valueWithCGPoint:v.center],
+            @"transform":[NSValue valueWithCGAffineTransform:v.transform] };
     }
     objc_setAssociatedObject(bar, &kRestoreKey, saved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(bar, &kRingKey, ring, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(bar, &kActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.folded = YES;
 
     [UIView animateWithDuration:0.75 delay:0 usingSpringWithDamping:0.86
         initialSpringVelocity:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        for (UIView *view in icons) {
-            view.center = ring.center;
-            view.transform = CGAffineTransformMakeScale(0.12, 0.12);
-            view.alpha = 0;
+        for (UIView *v in icons) {
+            v.center = ring.center;
+            v.transform = CGAffineTransformMakeScale(0.12, 0.12);
+            v.alpha = 0;
         }
         ring.alpha = 1;
     } completion:^(BOOL finished) {
         self.transitioning = NO;
-        // Whether the spring finished or was interrupted, the glyphs end up
-        // hidden; the maintain pass keeps them there from now on.
-        for (UIView *view in icons) {
-            view.hidden = YES;
-            view.alpha = 0;
-        }
+        if (finished) for (UIView *v in icons) v.hidden = YES;
     }];
 }
-
-#pragma mark - Tick
 
 - (void)tick:(UIView *)bar {
     if (!bar || !bar.window) return;
@@ -316,24 +213,13 @@ static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
         [self unfold:bar];
         return;
     }
-    if ([self isFolded:bar]) {
-        UIView *ring = objc_getAssociatedObject(bar, &kRingKey);
-        if (ring && ring.superview == bar) {
-            [self maintain:bar];
-            return;
-        }
-        // The bar was rebuilt and the ring went with it: fold again from scratch.
-        objc_setAssociatedObject(bar, &kRestoreKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(bar, &kActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        self.transitioning = NO;
+    if (!self.folded && !self.transitioning) {
+        // Let the system render its real icons before animating anything.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+            (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!self.folded && !NativeLocked() && !NativeControlCenterVisible()) [self fold:bar];
+        });
     }
-    if (self.transitioning) return;
-    // Let the system render its real icons before animating anything.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-        (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (![self isFolded:bar] && !self.transitioning &&
-            !NativeLocked() && !NativeControlCenterVisible()) [self fold:bar];
-    });
 }
 
 - (void)scan {
@@ -353,6 +239,7 @@ static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
         [self tick:view];
         return;
     }
+    // Lunora discovers status items by their actual Image/String view types.
     NSString *className = NSStringFromClass(view.class);
     if ([className isEqualToString:@"STUIStatusBarImageView"] ||
         [className isEqualToString:@"STUIStatusBarStringView"] ||
@@ -370,102 +257,34 @@ static DuoGlyphKind DuoGlyphKindOf(UIView *view) {
 }
 @end
 
-typedef void (*NativeVoidIMP)(id, SEL);
-
-static NativeVoidIMP NativeOriginalStatusLayout;
-static NativeVoidIMP NativeOriginalStatusWindow;
-static NativeVoidIMP NativeOriginalStatusSuperview;
-static NativeVoidIMP NativeOriginalImageWindow;
-static NativeVoidIMP NativeOriginalImageSuperview;
-static NativeVoidIMP NativeOriginalStringWindow;
-static NativeVoidIMP NativeOriginalStringSuperview;
-
-static UIView *NativeStatusBarForView(id object) {
-    UIView *view = (UIView *)object;
-    while (view) {
-        if ([NSStringFromClass(view.class) isEqualToString:@"STUIStatusBar"]) return view;
-        view = view.superview;
-    }
-    return nil;
+static void (*NativeOriginalLayout)(id, SEL);
+static void NativeLayout(id self, SEL _cmd) {
+    if (NativeOriginalLayout) NativeOriginalLayout(self, _cmd);
+    [[NativeController shared] tick:(UIView *)self];
 }
 
-static void NativeTickFromView(id object) {
-    UIView *bar = NativeStatusBarForView(object);
-    if (bar) [[NativeController shared] tick:bar];
-}
-
-static void NativeStatusLayout(id self, SEL _cmd) {
-    if (NativeOriginalStatusLayout) NativeOriginalStatusLayout(self, _cmd);
-    NativeTickFromView(self);
-}
-
-static void NativeStatusWindow(id self, SEL _cmd) {
-    if (NativeOriginalStatusWindow) NativeOriginalStatusWindow(self, _cmd);
-    NativeTickFromView(self);
-}
-
-static void NativeStatusSuperview(id self, SEL _cmd) {
-    if (NativeOriginalStatusSuperview) NativeOriginalStatusSuperview(self, _cmd);
-    NativeTickFromView(self);
-}
-
-static void NativeImageWindow(id self, SEL _cmd) {
-    if (NativeOriginalImageWindow) NativeOriginalImageWindow(self, _cmd);
-    NativeTickFromView(self);
-}
-
-static void NativeImageSuperview(id self, SEL _cmd) {
-    if (NativeOriginalImageSuperview) NativeOriginalImageSuperview(self, _cmd);
-    NativeTickFromView(self);
-}
-
-static void NativeStringWindow(id self, SEL _cmd) {
-    if (NativeOriginalStringWindow) NativeOriginalStringWindow(self, _cmd);
-    NativeTickFromView(self);
-}
-
-static void NativeStringSuperview(id self, SEL _cmd) {
-    if (NativeOriginalStringSuperview) NativeOriginalStringSuperview(self, _cmd);
-    NativeTickFromView(self);
-}
-
-// Add a class-local override when the selector is inherited. This avoids
-// replacing UIView's implementation for every status-bar view in SpringBoard.
 static IMP NativeInstallOneHook(NSString *className, SEL selector, IMP replacement) {
     Class cls = objc_getClass(className.UTF8String);
     if (!cls) return NULL;
-    Method inheritedOrOwn = class_getInstanceMethod(cls, selector);
-    if (!inheritedOrOwn) return NULL;
-    IMP current = class_getMethodImplementation(cls, selector);
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return NULL;
+    IMP current = method_getImplementation(method);
     if (current == replacement) return NULL;
-    const char *types = method_getTypeEncoding(inheritedOrOwn);
-    if (class_addMethod(cls, selector, replacement, types)) return current;
-    Method own = class_getInstanceMethod(cls, selector);
-    if (!own) return NULL;
-    current = method_getImplementation(own);
-    if (current == replacement) return NULL;
-    method_setImplementation(own, replacement);
+    method_setImplementation(method, replacement);
     return current;
 }
 
 static void NativeInstallHook(void) {
-    IMP original = NativeInstallOneHook(@"STUIStatusBar", @selector(layoutSubviews), (IMP)NativeStatusLayout);
-    if (original) NativeOriginalStatusLayout = (NativeVoidIMP)original;
-
-    original = NativeInstallOneHook(@"STUIStatusBar", @selector(didMoveToWindow), (IMP)NativeStatusWindow);
-    if (original) NativeOriginalStatusWindow = (NativeVoidIMP)original;
-    original = NativeInstallOneHook(@"STUIStatusBar", @selector(didMoveToSuperview), (IMP)NativeStatusSuperview);
-    if (original) NativeOriginalStatusSuperview = (NativeVoidIMP)original;
-
-    // These callbacks cover glyphs that arrive after the bar's layout pass.
-    original = NativeInstallOneHook(@"STUIStatusBarImageView", @selector(didMoveToWindow), (IMP)NativeImageWindow);
-    if (original) NativeOriginalImageWindow = (NativeVoidIMP)original;
-    original = NativeInstallOneHook(@"STUIStatusBarImageView", @selector(didMoveToSuperview), (IMP)NativeImageSuperview);
-    if (original) NativeOriginalImageSuperview = (NativeVoidIMP)original;
-    original = NativeInstallOneHook(@"STUIStatusBarStringView", @selector(didMoveToWindow), (IMP)NativeStringWindow);
-    if (original) NativeOriginalStringWindow = (NativeVoidIMP)original;
-    original = NativeInstallOneHook(@"STUIStatusBarStringView", @selector(didMoveToSuperview), (IMP)NativeStringSuperview);
-    if (original) NativeOriginalStringSuperview = (NativeVoidIMP)original;
+    NativeOriginalLayout = (void (*)(id, SEL))NativeInstallOneHook(
+        @"STUIStatusBar", @selector(layoutSubviews), (IMP)NativeLayout);
+    // Lunora 1.1.4 also observes these three native view lifecycle callbacks.
+    // They cover bars whose trailing icons are not yet in place at layout time.
+    NativeInstallOneHook(@"STUIStatusBar", @selector(didMoveToWindow), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBar", @selector(didMoveToSuperview), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarImageView", @selector(didMoveToWindow), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarImageView", @selector(didMoveToSuperview), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarStringView", @selector(didMoveToWindow), (IMP)NativeLayout);
+    NativeInstallOneHook(@"STUIStatusBarStringView", @selector(didMoveToSuperview), (IMP)NativeLayout);
 }
 
 __attribute__((constructor)) static void NativeInit(void) {
