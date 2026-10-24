@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+mkdir -p /var/mobile/Library/Preferences
+killall -9 cfprefsd 2>/dev/null || true
+exit 0

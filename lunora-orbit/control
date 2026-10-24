@@ -1,0 +1,10 @@
+Package: com.ning.duobar
+Name: DuoBar
+Description: Duo 风格状态栏圆环，基于 Lunora 1.1.4 的 Orbit 接口精简。
+Maintainer: Ning
+Author: Ning
+Section: Tweaks
+Depends: firmware (>= 15.1), firmware (<< 27.0), mobilesubstrate, preferenceloader
+Architecture: iphoneos-arm64e
+Version: 1.4-orbit-test
+Icon: https://sorenning.github.io/debs/icons/duobar-1.0-final.png
