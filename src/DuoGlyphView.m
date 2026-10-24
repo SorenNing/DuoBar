@@ -22,6 +22,7 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
         self.backgroundColor = UIColor.clearColor;
+        _contentScale = 1.0;
         self.opaque = NO;
         self.userInteractionEnabled = NO;
         self.isAccessibilityElement = NO;
@@ -78,7 +79,7 @@ static void DuoArc(CGPoint center, CGFloat radius, CGFloat start, CGFloat end, U
     CGContextSaveGState(context);
     CGContextTranslateCTM(context, (self.bounds.size.width - 32 * scale) / 2,
                                   (self.bounds.size.height - 34 * scale) / 2);
-    CGContextScaleCTM(context, scale, scale);
+    CGContextScaleCTM(context, scale * MAX(0.30, self.contentScale), scale * MAX(0.30, self.contentScale));
 
     double level = isfinite(self.charge) ? fmax(0, fmin(1, self.charge)) : 0;
     UIColor *foreground = self.foreground ?: UIColor.labelColor;

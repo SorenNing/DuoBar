@@ -7,6 +7,7 @@
 @property(nonatomic) BOOL lowPower;
 @property(nonatomic) BOOL wifiVisible;
 @property(nonatomic) BOOL hotspotActive;
+@property(nonatomic) CGFloat contentScale;
 @property(nonatomic, strong) UIImage *hotspotImage;
 @property(nonatomic) NSInteger wifiBars;
 @property(nonatomic) NSInteger cellularBars;

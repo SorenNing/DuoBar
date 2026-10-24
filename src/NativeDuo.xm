@@ -77,16 +77,18 @@ static BOOL NativeLocked(void) {
 }
 
 - (void)collect:(UIView *)view in:(NSMutableArray<UIView *> *)icons {
+    if (!view) return;
     NSString *name = NSStringFromClass(view.class);
-    for (NSString *token in @[@"BatteryView", @"WifiSignalView", @"CellularSignalView"]) {
-        if ([name containsString:token]) {
-            [icons addObject:view];
-            return;
-        }
+    if ([name isEqualToString:@"STUIStatusBarImageView"] ||
+        [name isEqualToString:@"STUIStatusBarStringView"] ||
+        [name containsString:@"STUIStatusBarBatteryView"] ||
+        [name containsString:@"STUIStatusBarSignalView"] ||
+        [name containsString:@"BatteryView"] ||
+        [name containsString:@"WifiSignalView"] ||
+        [name containsString:@"CellularSignalView"]) {
+        if (!view.hidden && view.alpha > 0.01) [icons addObject:view];
     }
-    if ([view isKindOfClass:UIScrollView.class]) {
-        for (UIView *sub in view.subviews) [self collect:sub in:icons];
-    }
+    for (UIView *sub in view.subviews) [self collect:sub in:icons];
 }
 
 - (UIColor *)foregroundOf:(UIView *)bar {
@@ -139,13 +141,23 @@ static BOOL NativeLocked(void) {
         if (!wifi && [name containsString:@"WifiSignalView"]) wifi = v;
         if (!cell && [name containsString:@"CellularSignalView"]) cell = v;
     }
+    if (!battery) {
+        // Lunora uses generic STUIStatusBarImageView for trailing status icons;
+        // pick the last visible image as the battery anchor, never abandon the bar.
+        for (UIView *v in icons.reverseObjectEnumerator) {
+            if ([NSStringFromClass(v.class) isEqualToString:@"STUIStatusBarImageView"]) {
+                battery = v; break;
+            }
+        }
+    }
     if (!battery) { self.transitioning = NO; return; }
 
     // Do not convert or mutate geometry before this point: the real UIKit
     // hierarchy is the starting state, never a captured image.
     UIView *host = bar;
     CGRect b = [battery convertRect:battery.bounds toView:host];
-    double scale = MAX(0.70, MIN(1.40, NativeNumber(@"SizeScale", kGate, 1.0)));
+    double scale = NativeNumber(@"OrbitScale", kEngine, 100.0) / 100.0;
+    scale = MAX(0.50, MIN(1.50, scale));
     CGFloat height = MIN(34.0, MAX(30.0, host.bounds.size.height - 4)) * scale;
     CGFloat width = height * 32.0 / 34.0;
     CGFloat margin = 24.0;
@@ -159,6 +171,7 @@ static BOOL NativeLocked(void) {
     ring.userInteractionEnabled = NO;
     ring.foreground = [self foregroundOf:bar];
     ring.showsPercent = NativeNumber(@"BatteryPercentageEnabled", kEngine, 1) != 0;
+    ring.contentScale = NativeNumber(@"RightNetworkIconScale", kEngine, 47.0) / 100.0;
     double level = [self numberOf:battery selector:@selector(chargePercent) fallback:80.0];
     if (level > 1.0) level /= 100.0;
     ring.charge = MAX(0, MIN(1, level));
@@ -167,7 +180,6 @@ static BOOL NativeLocked(void) {
     ring.wifiVisible = wifi != nil;
     ring.wifiBars = wifi ? (NSInteger)[self numberOf:wifi selector:@selector(numberOfActiveBars) fallback:3] : 0;
     ring.cellularBars = cell ? (NSInteger)[self numberOf:cell selector:@selector(numberOfActiveBars) fallback:3] : 0;
-    ring.alpha = 0;
     [host addSubview:ring];
 
     NSMutableDictionary *saved = [NSMutableDictionary dictionary];
