@@ -16,6 +16,7 @@ static char IDISessionKey;
 @property(nonatomic,assign) BOOL busy;
 @property(nonatomic,assign) BOOL attaching;
 @property(nonatomic,assign) BOOL attachQueued;
+-(void)attachNow:(UIView *)bar;
 @end
 
 @implementation IDIStatusBarSession
@@ -77,7 +78,6 @@ static char IDISessionKey;
 // Adding subviews from inside layoutSubviews re-enters the bar's layout and can
 // recurse until the stack overflows, so the whole attach runs on the next
 // runloop turn and is guarded against re-entry.
--(void)attachNow:(UIView *)bar;
 -(void)attachToBar:(UIView *)bar {
     if (self.folded || self.attaching || self.attachQueued) return;
     if (!bar.window) return;
