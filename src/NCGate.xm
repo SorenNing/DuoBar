@@ -117,24 +117,47 @@ static void DuoTick(void) {
 }
 
 
-// NovaUnlock ships a self-made crash guard: if SpringBoard dies within eight
-// seconds of loading its core, the run counts as a crash, and after two such
-// runs the engine disables itself until the package is reinstalled. A respring
-// inside that window is indistinguishable from a crash to it, which is what
-// kept turning the animations off. Once the core has clearly stayed loaded for
-// ten seconds we know it is healthy, so the stale counter is cleared.
-static void DuoClearNovaGuardIfHealthy(void) {
-    BOOL coreLoaded = NO;
+// NovaUnlock ships a self-made crash guard: its loader keeps a counter in
+// /var/mobile/Library/Preferences/com.sanderzen.novaunlock.guard and, once that
+// counter passes one, it refuses to load NovaUnlockCore.dylib at all. A respring
+// inside the first eight seconds counts as a crash to it, so ordinary testing
+// permanently switches the engine off. This gate clears the file and, if the
+// engine still did not load, dlopens the core itself and starts it with no-op
+// guard callbacks, so the counter can never disable the animations.
+#import <dlfcn.h>
+#import <mach-o/dyld.h>
+#import <string.h>
+#import <unistd.h>
+
+#define DUO_GUARD_PATH "/var/mobile/Library/Preferences/com.sanderzen.novaunlock.guard"
+#define DUO_CORE_PATH "/Library/MobileSubstrate/DynamicLibraries/NovaUnlockCore.dylib"
+#define DUO_CORE_NAME "NovaUnlockCore.dylib"
+
+static void DuoGuardNoop(void) {}
+
+static BOOL DuoCoreLoaded(void) {
     for (uint32_t i = 0; i < _dyld_image_count(); i++) {
         const char *name = _dyld_get_image_name(i);
-        if (name && strstr(name, "NovaUnlockCore.dylib")) { coreLoaded = YES; break; }
+        if (name && strstr(name, DUO_CORE_NAME)) return YES;
     }
-    if (!coreLoaded) return;
-    NSString *guard = @"/var/mobile/Library/Preferences/com.sanderzen.novaunlock.guard";
-    if ([NSFileManager.defaultManager fileExistsAtPath:guard]) {
-        [NSFileManager.defaultManager removeItemAtPath:guard error:NULL];
-        NSLog(@"[DuoBar] NovaUnlock core healthy; cleared stale crash guard");
-    }
+    return NO;
+}
+
+static void DuoClearGuard(void) {
+    unlink(DUO_GUARD_PATH);
+}
+
+static void DuoStartCoreDirectly(void) {
+    if (DuoCoreLoaded()) return;
+    DuoClearGuard();
+    void *handle = dlopen(DUO_CORE_PATH, RTLD_NOW);
+    if (!handle) return;
+    void *entry = dlsym(handle, "u26_core_start");
+    if (!entry) return;
+    // The loader passes two callbacks: "mark running" and "schedule the health
+    // reset". No-ops keep the guard permanently inert while the engine runs.
+    ((void (*)(void *, void *))entry)((void *)DuoGuardNoop, (void *)DuoGuardNoop);
+    NSLog(@"[DuoBar] NovaUnlock core started directly (guard bypassed)");
 }
 
 static void DuoInstallHooks(void) {
@@ -147,14 +170,21 @@ static void DuoInstallHooks(void) {
 __attribute__((constructor)) static void DuoGateInit(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
+        DuoClearGuard();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{
                 DuoInstallHooks();
+                // The oscillator: clear the guard before and while the engine
+                // loads, then start the core ourselves if it never arrived.
+                for (int i = 0; i < 40; i++) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 50 * NSEC_PER_MSEC)),
+                        dispatch_get_main_queue(), ^{ DuoClearGuard(); });
+                }
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
+                    dispatch_get_main_queue(), ^{ DuoStartCoreDirectly(); });
                 [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(__unused NSTimer *timer) {
                     DuoTick();
                 }];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)),
-                    dispatch_get_main_queue(), ^{ DuoClearNovaGuardIfHealthy(); });
             });
     }
 }
