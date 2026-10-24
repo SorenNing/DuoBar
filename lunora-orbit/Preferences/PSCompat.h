@@ -61,5 +61,7 @@ typedef NS_ENUM(NSInteger, PSCellType) {
 @end
 
 @interface PSSliderTableCell : PSTableCell
+-(id)readPreferenceValue:(id)specifier;
+-(void)setPreferenceValue:(id)value specifier:(id)specifier;
 @end
 #endif
