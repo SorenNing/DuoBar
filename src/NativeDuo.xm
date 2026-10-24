@@ -187,7 +187,6 @@ static BOOL NativeLocked(void) {
             v.alpha = 0;
         }
         ring.alpha = 1;
-        ring.reveal = 1;
     } completion:^(BOOL finished) {
         self.transitioning = NO;
         if (finished) for (UIView *v in icons) v.hidden = YES;
