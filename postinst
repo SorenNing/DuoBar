@@ -1,0 +1,43 @@
+#!/bin/sh
+set -e
+PLIST=/var/mobile/Library/Preferences/iya.banana.duoicon.plist
+mkdir -p /var/mobile/Library/Preferences
+if [ -f "$PLIST" ] && ! grep -q RightSignalSIM "$PLIST"; then
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -replace RightSignalSIM -integer 1 "$PLIST" 2>/dev/null || rm -f "$PLIST"
+  else
+    rm -f "$PLIST"
+  fi
+fi
+if [ -f "$PLIST" ] && ! grep -q OrbitRevealAnimationMode "$PLIST"; then
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -replace OrbitRevealAnimationMode -integer 1 "$PLIST" 2>/dev/null || true
+  fi
+fi
+if [ ! -f "$PLIST" ]; then
+cat > "$PLIST" <<'PL'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Enabled</key><true/>
+<key>IconStyle</key><integer>0</integer>
+<key>BatteryPercentageEnabled</key><true/>
+<key>OrbitScale</key><real>150</real>
+<key>OrbitXOffset</key><real>0</real>
+<key>OrbitYOffset</key><real>0</real>
+<key>RightOutlineWidth</key><real>100</real>
+<key>RightNetworkIconScale</key><real>47</real>
+<key>RightUnlockAnimation</key><true/>
+<key>RightControlCenterReturnAnimation</key><true/>
+<key>RightSignalSIM</key><integer>1</integer>
+<key>OrbitRevealAnimationMode</key><integer>1</integer>
+<key>RightShowOnLockScreen</key><false/>
+</dict></plist>
+PL
+chown mobile:mobile "$PLIST" 2>/dev/null || true
+fi
+if [ -f "$PLIST" ] && command -v plutil >/dev/null 2>&1; then
+  plutil -replace OrbitScale -integer 150 "$PLIST" 2>/dev/null || true
+fi
+killall -9 cfprefsd 2>/dev/null || true
+exit 0

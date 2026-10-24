@@ -1,0 +1,10 @@
+Package: com.ning.duobar
+Name: DuoBar
+Version: 1.1
+Architecture: iphoneos-arm64e
+Description: Duo 风格状态栏圆环：电量、Wi-Fi、蜂窝信号与 VPN 指示，解锁与控制中心返回时播放原生 reveal 动画。
+Maintainer: Ning
+Author: Ning
+Section: Tweaks
+Depends: firmware (>= 15.1), firmware (<< 27.0), mobilesubstrate, preferenceloader
+Tag: role::tweak
